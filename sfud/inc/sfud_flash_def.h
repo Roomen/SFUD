@@ -72,6 +72,14 @@ typedef struct {
     uint8_t capacity_id;                         /**< capacity ID */
     uint8_t read_mode;                           /**< supported read mode on this qspi flash chip */
 } sfud_qspi_flash_ext_info;
+
+/* QSPI flash chip's Quad Enable(QE) bit information */
+typedef struct {
+    uint8_t mf_id;                               /**< manufacturer ID */
+    uint8_t type_id;                             /**< memory type ID */
+    uint8_t capacity_id;                         /**< capacity ID */
+    uint8_t qe_method;                           /**< how to set the QE bit @see sfud_qspi_qe_method */
+} sfud_qspi_flash_qe_info;
 #endif
 
 /* SFUD support manufacturer JEDEC ID */
@@ -195,6 +203,22 @@ typedef struct {
     {SFUD_MF_ID_GIGADEVICE, 0x40, 0x17, NORMAL_SPI_READ|DUAL_OUTPUT},                              \
     /* NM25Q128EVB */                                                                              \
     {SFUD_MF_ID_NOR_MEM, 0x21, 0x18, NORMAL_SPI_READ|DUAL_OUTPUT|DUAL_IO|QUAD_OUTPUT|QUAD_IO},          \
+    /* P25Q64H, no QUAD_IO: the 0xEB mode bits are sent as dummy cycles with undriven IO lines, */ \
+    /* which may put the chip into continuous read mode */                                         \
+    {SFUD_MF_ID_PUYA, 0x60, 0x17, NORMAL_SPI_READ|DUAL_OUTPUT|QUAD_OUTPUT},                        \
+}
+
+/* This table saves how to set the Quad Enable(QE) bit of QSPI flash.
+ * sfud_qspi_fast_read_enable() sets QE before switching a chip in this table to quad read,
+ * and keeps normal SPI read if QE can't be set.
+ * A quad read chip NOT in this table is switched to quad read without touching QE,
+ * so its QE bit must already be set (e.g. by factory).
+ * | mf_id | type_id | capacity_id | qe_method |
+ */
+#define SFUD_FLASH_QE_INFO_TABLE                                                                   \
+{                                                                                                  \
+    /* P25Q64H */                                                                                  \
+    {SFUD_MF_ID_PUYA, 0x60, 0x17, QE_SR2_BIT1_WR_31H},                                             \
 }
 #endif /* SFUD_USING_QSPI */
 

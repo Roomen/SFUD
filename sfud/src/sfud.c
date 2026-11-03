@@ -60,6 +60,21 @@ enum sfud_qspi_read_mode {
 
 /* QSPI flash chip's extended information table */
 static const sfud_qspi_flash_ext_info qspi_flash_ext_info_table[] = SFUD_FLASH_EXT_INFO_TABLE;
+
+/**
+ * how to set the Quad Enable(QE) bit
+ */
+enum sfud_qspi_qe_method {
+    QE_SR2_BIT1_WR_31H = 1,                 /**< QE is bit1 of status register 2, read by 0x35 and written by 0x31 */
+};
+
+/* A stale copy of sfud_flash_def.h without this table would switch QE-less chips to quad read and read wrong data */
+#ifndef SFUD_FLASH_QE_INFO_TABLE
+#error "SFUD_FLASH_QE_INFO_TABLE is missing, please update sfud_flash_def.h"
+#endif
+
+/* QSPI flash chip's Quad Enable(QE) bit information table */
+static const sfud_qspi_flash_qe_info qspi_flash_qe_info_table[] = SFUD_FLASH_QE_INFO_TABLE;
 #endif /* SFUD_USING_QSPI */
 
 static sfud_err software_init(const sfud_flash *flash);
@@ -186,6 +201,70 @@ static void qspi_set_read_cmd_format(sfud_flash *flash, uint8_t ins, uint8_t ins
     flash->read_cmd_format.data_lines = data_lines;
 }
 
+/* QE bit and OTP lock bits LB3~LB1 in status register 2 */
+#define QSPI_SR2_QE                                    (1 << 1)
+#define QSPI_SR2_LB_MASK                               (0x07 << 3)
+
+/**
+ * Make sure the Quad Enable(QE) bit is set before quad read, @see SFUD_FLASH_QE_INFO_TABLE
+ *
+ * QE is non-volatile, so it is written only when it reads back 0, not on every boot.
+ *
+ * @param flash flash device
+ *
+ * @return SFUD_SUCCESS when QE is set or the chip is not in the QE table
+ */
+static sfud_err qspi_quad_enable(const sfud_flash *flash) {
+    const sfud_spi *spi = &flash->spi;
+    uint8_t qe_method = 0, cmd_data[2], status = 0;
+    sfud_err result = SFUD_SUCCESS;
+    size_t i;
+
+    for (i = 0; i < sizeof(qspi_flash_qe_info_table) / sizeof(sfud_qspi_flash_qe_info); i++) {
+        if ((qspi_flash_qe_info_table[i].mf_id == flash->chip.mf_id)
+                && (qspi_flash_qe_info_table[i].type_id == flash->chip.type_id)
+                && (qspi_flash_qe_info_table[i].capacity_id == flash->chip.capacity_id)) {
+            qe_method = qspi_flash_qe_info_table[i].qe_method;
+        }
+    }
+    if (qe_method == 0) {
+        return SFUD_SUCCESS;
+    } else if (qe_method != QE_SR2_BIT1_WR_31H) {
+        return SFUD_ERR_NOT_FOUND;
+    }
+
+    if (spi->lock) {
+        spi->lock(spi);
+    }
+    cmd_data[0] = SFUD_CMD_READ_STATUS_REGISTER_2;
+    result = spi->wr(spi, cmd_data, 1, &status, 1);
+    if (result == SFUD_SUCCESS && (status & QSPI_SR2_QE) == 0) {
+        result = set_write_enabled(flash, true);
+        if (result == SFUD_SUCCESS) {
+            /* Write status register 2 alone by 0x31: a one byte 0x01 write clears QE on some chips (e.g. P25Q64H).
+             * Keep the other bits but never program the OTP lock bits, a bad read must not lock the security registers. */
+            cmd_data[0] = SFUD_CMD_WRITE_STATUS_REGISTER_2;
+            cmd_data[1] = (status & ~QSPI_SR2_LB_MASK) | QSPI_SR2_QE;
+            result = spi->wr(spi, cmd_data, 2, NULL, 0);
+        }
+        if (result == SFUD_SUCCESS) {
+            result = wait_busy(flash);
+        }
+        if (result == SFUD_SUCCESS) {
+            cmd_data[0] = SFUD_CMD_READ_STATUS_REGISTER_2;
+            result = spi->wr(spi, cmd_data, 1, &status, 1);
+        }
+        if (result == SFUD_SUCCESS && (status & QSPI_SR2_QE) == 0) {
+            result = SFUD_ERR_WRITE;
+        }
+    }
+    if (spi->unlock) {
+        spi->unlock(spi);
+    }
+
+    return result;
+}
+
 /**
  * Enbale the fast read mode in QSPI flash mode. Default read mode is normal SPI mode.
  *
@@ -231,6 +310,15 @@ sfud_err sfud_qspi_fast_read_enable(sfud_flash *flash, uint8_t data_line_width) 
         }
         break;
     case 4:
+        /* quad read with QE=0 returns wrong data, so keep normal SPI read if QE can't be set */
+        if (read_mode & (QUAD_IO | QUAD_OUTPUT)) {
+            result = qspi_quad_enable(flash);
+            if (result != SFUD_SUCCESS) {
+                SFUD_INFO("Error: %s flash set Quad Enable bit failed(%d), keep normal SPI read.", flash->name, result);
+                qspi_set_read_cmd_format(flash, SFUD_CMD_READ_DATA, 1, 1, 0, 1);
+                break;
+            }
+        }
         if (read_mode & QUAD_IO) {
             qspi_set_read_cmd_format(flash, SFUD_CMD_QUAD_IO_READ_DATA, 1, 4, 6, 4);
         } else if (read_mode & QUAD_OUTPUT) {
