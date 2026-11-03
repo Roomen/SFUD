@@ -102,6 +102,14 @@ if (!(EXPR))                                                                   \
 #define SFUD_CMD_WRITE_STATUS_REGISTER                 0x01
 #endif
 
+#ifndef SFUD_CMD_READ_STATUS_REGISTER_2
+#define SFUD_CMD_READ_STATUS_REGISTER_2                0x35
+#endif
+
+#ifndef SFUD_CMD_WRITE_STATUS_REGISTER_2
+#define SFUD_CMD_WRITE_STATUS_REGISTER_2               0x31
+#endif
+
 #ifndef SFUD_CMD_PAGE_PROGRAM
 #define SFUD_CMD_PAGE_PROGRAM                          0x02
 #endif
